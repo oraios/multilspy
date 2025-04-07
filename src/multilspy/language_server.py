@@ -6,8 +6,11 @@ The details of Language Specific configuration are not exposed to the user.
 """
 
 import asyncio
+from copy import copy
 import dataclasses
+import hashlib
 import json
+import pickle
 import time
 import logging
 import os
@@ -26,8 +29,8 @@ from .lsp_protocol_handler.server import (
 from .multilspy_config import MultilspyConfig, Language
 from .multilspy_exceptions import MultilspyException
 from .multilspy_utils import PathUtils, FileUtils, TextUtils
-from pathlib import PurePath
-from typing import AsyncIterator, Iterator, List, Dict, Union, Tuple
+from pathlib import Path, PurePath
+from typing import AsyncIterator, Iterator, List, Dict, Optional, Union, Tuple
 from .type_helpers import ensure_all_methods_implemented
 
 
@@ -51,6 +54,13 @@ class LSPFileBuffer:
 
     # reference count of the file
     ref_count: int
+    
+    # --------------------------------- MODIFICATIONS BY MISCHA ---------------------------------
+    
+    content_hash: str = ""
+    
+    def __post_init__(self):
+        self.content_hash = hashlib.md5(self.contents.encode('utf-8')).hexdigest()
 
 
 class LanguageServer:
@@ -74,11 +84,18 @@ class LanguageServer:
         :return LanguageServer: A language specific LanguageServer instance.
         """
         if config.code_language == Language.PYTHON:
-            from multilspy.language_servers.jedi_language_server.jedi_server import (
-                JediServer,
+            from multilspy.language_servers.pyright_language_server.pyright_server import (
+                PyrightServer,
             )
 
-            return JediServer(config, logger, repository_root_path)
+            return PyrightServer(config, logger, repository_root_path)
+            # It used to be jedi, but pyright is a bit faster, and also more actively maintained
+            # Keeping the previous code for reference
+            # from multilspy.language_servers.jedi_language_server.jedi_server import (
+            #     JediServer,
+            # )
+
+            # return JediServer(config, logger, repository_root_path)
         elif config.code_language == Language.JAVA:
             from multilspy.language_servers.eclipse_jdtls.eclipse_jdtls import (
                 EclipseJDTLS,
@@ -159,6 +176,12 @@ class LanguageServer:
 
         self.language_id = language_id
         self.open_file_buffers: Dict[str, LSPFileBuffer] = {}
+        
+        # --------------------------------- MODIFICATIONS BY MISCHA ---------------------------------
+        self._document_symbols_cache:  dict[str, Tuple[str, Tuple[List[multilspy_types.UnifiedSymbolInformation], Optional[List[multilspy_types.TreeRepr]]]]] = {}
+        """Maps file paths to a tuple of (file_content_hash, result_of_request_document_symbols)"""
+        self.load_cache()
+        self._cache_has_changed = bool
 
     @asynccontextmanager
     async def start_server(self) -> AsyncIterator["LanguageServer"]:
@@ -182,7 +205,7 @@ class LanguageServer:
     # TODO: Add support for more LSP features
 
     @contextmanager
-    def open_file(self, relative_file_path: str) -> Iterator[None]:
+    def open_file(self, relative_file_path: str) -> Iterator[LSPFileBuffer]:
         """
         Open a file in the Language Server. This is required before making any requests to the Language Server.
 
@@ -203,7 +226,7 @@ class LanguageServer:
             assert self.open_file_buffers[uri].ref_count >= 1
 
             self.open_file_buffers[uri].ref_count += 1
-            yield
+            yield self.open_file_buffers[uri]
             self.open_file_buffers[uri].ref_count -= 1
         else:
             contents = FileUtils.read_file(self.logger, absolute_file_path)
@@ -221,7 +244,7 @@ class LanguageServer:
                     }
                 }
             )
-            yield
+            yield self.open_file_buffers[uri]
             self.open_file_buffers[uri].ref_count -= 1
 
         if self.open_file_buffers[uri].ref_count == 0:
@@ -392,9 +415,12 @@ class LanguageServer:
                     new_item: multilspy_types.Location = {}
                     new_item.update(item)
                     new_item["absolutePath"] = PathUtils.uri_to_path(new_item["uri"])
-                    new_item["relativePath"] = str(
-                        PurePath(os.path.relpath(new_item["absolutePath"], self.repository_root_path))
-                    )
+                    try:
+                        new_item["relativePath"] = str(
+                            PurePath(os.path.relpath(new_item["absolutePath"], self.repository_root_path))
+                        )
+                    except:
+                        new_item["relativePath"] = str(new_item["absolutePath"])
                     ret.append(multilspy_types.Location(new_item))
                 elif (
                     LSPConstants.ORIGIN_SELECTION_RANGE in item
@@ -405,9 +431,12 @@ class LanguageServer:
                     new_item: multilspy_types.Location = {}
                     new_item["uri"] = item[LSPConstants.TARGET_URI]
                     new_item["absolutePath"] = PathUtils.uri_to_path(new_item["uri"])
-                    new_item["relativePath"] = str(
-                        PurePath(os.path.relpath(new_item["absolutePath"], self.repository_root_path))
-                    )
+                    try:
+                        new_item["relativePath"] = str(
+                            PurePath(os.path.relpath(new_item["absolutePath"], self.repository_root_path))
+                        )
+                    except:
+                        new_item["relativePath"] = str(new_item["absolutePath"])
                     new_item["range"] = item[LSPConstants.TARGET_SELECTION_RANGE]
                     ret.append(multilspy_types.Location(**new_item))
                 else:
@@ -424,6 +453,13 @@ class LanguageServer:
                 PurePath(os.path.relpath(new_item["absolutePath"], self.repository_root_path))
             )
             ret.append(multilspy_types.Location(**new_item))
+        elif response is None:
+            # Some language servers return None when they cannot find a definition
+            # This is expected for certain symbol types like generics or types with incomplete information
+            self.logger.log(
+                f"Language server returned None for definition request at {relative_file_path}:{line}:{column}",
+                logging.WARNING,
+            )
         else:
             assert False, f"Unexpected response from Language Server: {response}"
 
@@ -581,8 +617,19 @@ class LanguageServer:
         :param relative_file_path: The relative path of the file that has the symbols
 
         :return Tuple[List[multilspy_types.UnifiedSymbolInformation], Union[List[multilspy_types.TreeRepr], None]]: A list of symbols in the file, and the tree representation of the symbols
-        """
-        with self.open_file(relative_file_path):
+        """        
+        self.logger.log(f"Requesting document symbols for {relative_file_path} for the first time", logging.DEBUG)
+        with self.open_file(relative_file_path) as file_data:
+            file_hash_and_result = self._document_symbols_cache.get(relative_file_path)
+            if file_hash_and_result is not None:
+                file_hash, result = file_hash_and_result
+                if file_hash == file_data.content_hash:
+                    self.logger.log(f"Returning cached document symbols for {relative_file_path}", logging.DEBUG)
+                    return result
+                else:
+                    self.logger.log(f"Content for {relative_file_path} has changed. Overwriting cache", logging.INFO)
+            
+            
             response = await self.server.send.document_symbol(
                 {
                     "textDocument": {
@@ -616,7 +663,11 @@ class LanguageServer:
             else:
                 ret.append(multilspy_types.UnifiedSymbolInformation(**item))
 
-        return ret, l_tree
+        result = ret, l_tree
+        self.logger.log(f"Caching document symbols for {relative_file_path}", logging.DEBUG)
+        self._document_symbols_cache[relative_file_path] = (file_data.content_hash, result)
+        self._cache_has_changed = True
+        return result
     
     async def request_hover(self, relative_file_path: str, line: int, column: int) -> Union[multilspy_types.Hover, None]:
         """
@@ -648,6 +699,321 @@ class LanguageServer:
         assert isinstance(response, dict)
 
         return multilspy_types.Hover(**response)
+    
+    # ----------------------------- FROM HERE ON MODIFICATIONS BY MISCHA --------------------
+    
+    async def request_parsed_files(self) -> list[str]:
+        """This is slow, as it finds all files by finding all symbols. 
+        
+        This seems to be the only way, the LSP does not provide any endpoints for listing project files."""
+        if not self.server_started:
+            self.logger.log(
+                "request_parsed_files called before Language Server started",
+                logging.ERROR,
+            )
+            raise MultilspyException("Language Server not started")
+        
+        params = LSPTypes.WorkspaceSymbolParams(query="")  # Empty query returns all symbols
+        symbols = await self.server.send.workspace_symbol(params) or []
+        return list({s["location"]["uri"].replace("file://", "") for s in symbols})
+    
+    async def request_referencing_symbols(
+        self,
+        relative_file_path: str,
+        line: int,
+        column: int,
+        include_imports: bool = True,
+        include_self: bool = False,
+    ) -> List[multilspy_types.UnifiedSymbolInformation]:
+        """
+        Finds all symbols that reference the symbol at the given location.
+        This is similar to request_references but filters to only include symbols
+        (functions, methods, classes, etc.) that reference the target symbol.
+
+        :param relative_file_path: The relative path to the file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column number.
+        :param include_imports: whether to also include imports as references.
+            Unfortunately, the LSP does not have an import type, so the references corresponding to imports
+            will not be easily distinguishable from definitions.
+        :param include_self: whether to include the references that is the "input symbol" itself. 
+            Only has an effect if the relative_file_path, line and column point to a symbol, for example a definition.
+        :return: List of symbols that reference the target symbol.
+        """
+        if not self.server_started:
+            self.logger.log(
+                "request_referencing_symbols called before Language Server started",
+                logging.ERROR,
+            )
+            raise MultilspyException("Language Server not started")
+
+        # First, get all references to the symbol
+        references = await self.request_references(relative_file_path, line, column)
+        if not references:
+            return []
+
+        # For each reference, find the containing symbol
+        result = []
+        incoming_symbol = None
+        for ref in references:
+            ref_path = ref["relativePath"]
+            ref_line = ref["range"]["start"]["line"]
+            ref_col = ref["range"]["start"]["character"]
+
+            with self.open_file(ref_path) as file_data:
+                # Get the containing symbol for this reference
+                containing_symbol = await self.request_containing_symbol(
+                    ref_path, ref_line, ref_col
+                )
+                if containing_symbol is None:
+                    # TODO: HORRIBLE HACK! I don't know how to do it better for now...
+                    # THIS IS BOUND TO BREAK IN MANY CASES! IT IS ALSO SPECIFIC TO PYTHON!
+                    # Background:
+                    # When a variable is used to change something, like 
+                    #
+                    # instance = MyClass()
+                    # instance.status = "new status"
+                    #
+                    # we can't find the containing symbol for the reference to `status`
+                    # since there is no container on the line of the reference
+                    # The hack is to try to find a variable symbol in the containing module
+                    # by using the text of the reference to find the variable name (In a very heuristic way)
+                    # and then look for a symbol with that name and kind Variable
+                    ref_text = file_data.contents.split("\n")[ref_line]
+                    if "." in ref_text:   
+                        containing_symbol_name = ref_text.split(".")[0]
+                        all_symbols, _ = await self.request_document_symbols(ref_path)
+                        for symbol in all_symbols:
+                            if symbol["name"] == containing_symbol_name and symbol["kind"] == multilspy_types.SymbolKind.Variable:
+                                containing_symbol = copy(symbol)
+                                containing_symbol["location"] = ref
+                                containing_symbol["range"] = ref["range"]
+                                break
+                if containing_symbol is None:
+                    self.logger.log(f"Could not find containing symbol for {ref_path}:{ref_line}:{ref_col}", logging.WARNING)
+                    continue
+
+                # Checking for self-reference
+                if (
+                    containing_symbol["location"]["relativePath"] == relative_file_path
+                    and containing_symbol["selectionRange"]["start"]["line"] == ref_line
+                    and containing_symbol["selectionRange"]["start"]["character"] == ref_col
+                ):
+                    incoming_symbol = containing_symbol
+                    if include_self:
+                        result.append(containing_symbol)
+                        continue
+                    else:
+                        self.logger.log(f"Found self-reference for {incoming_symbol['name']}, skipping it since {include_self=}", logging.DEBUG)
+                        continue
+                
+                # checking whether reference is an import
+                # This is neither really safe nor elegant, but if we don't do it,
+                # there is no way to distinguish between definitions and imports as import is not a symbol-type
+                # and we get the type referenced symbol resulting from imports...
+                if (not include_imports \
+                    and incoming_symbol is not None \
+                    and containing_symbol["name"] == incoming_symbol["name"] \
+                    and containing_symbol["kind"] == incoming_symbol["kind"] \
+                ):
+                    self.logger.log(
+                        f"Found import of referenced symbol {incoming_symbol['name']}" 
+                        f"in {containing_symbol['location']['relativePath']}, skipping",
+                        logging.DEBUG
+                    )
+                    continue
+                
+                result.append(containing_symbol)
+
+        return result
+    
+    async def request_containing_symbol(
+        self,
+        relative_file_path: str,
+        line: int,
+        column: Optional[int] = None,
+        strict: bool = False,
+    ) -> multilspy_types.UnifiedSymbolInformation | None:
+        """
+        Finds the first symbol containing the position for the given file.
+        For Python, container symbols are considered to be those with kinds corresponding to
+        functions, methods, or classes (typically: Function (12), Method (6), Class (5)).
+
+        The method operates as follows:
+          - Request the document symbols for the file.
+          - Filter symbols to those that start at or before the given line.
+          - From these, first look for symbols whose range contains the (line, column).
+          - If one or more symbols contain the position, return the one with the greatest starting position
+            (i.e. the innermost container).
+          - If none (strictly) contain the position, return the symbol with the greatest starting position
+            among those above the given line.
+          - If no container candidates are found, return None.
+
+        :param relative_file_path: The relative path to the Python file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column (also called character). If not passed, the lookup will be based
+            only on the line.
+        :param strict: If True, the position must be strictly within the range of the symbol.
+            Setting to True is useful for example for finding the parent of a symbol, as with strict=False,
+            and the line pointing to a symbol itself, the containing symbol will be the symbol itself
+            (and not the parent).
+        :return: The container symbol (if found) or None.
+        """
+        # checking if the line is empty, unfortunately ugly and duplicating code, but I don't want to refactor
+        with self.open_file(relative_file_path):
+            absolute_file_path = str(
+                PurePath(self.repository_root_path, relative_file_path)
+            )
+            content = FileUtils.read_file(self.logger, absolute_file_path)
+            if content.split("\n")[line].strip() == "":
+                self.logger.log(
+                    f"Passing empty lines to request_container_symbol is currently not supported, {relative_file_path=}, {line=}",
+                    logging.ERROR,
+                )
+                return
+
+        symbols, _ = await self.request_document_symbols(relative_file_path)
+        
+        # make jedi and pyright api compatible
+        # the former has no location, the later has no range
+        # we will just always add location of the desired format to all symbols
+        for symbol in symbols:
+            if "location" not in symbol:
+                range = symbol["range"]
+                location = multilspy_types.Location(
+                    uri=f"file:/{absolute_file_path}",
+                    range=range,
+                    absolutePath=absolute_file_path,
+                    relativePath=relative_file_path,
+                )
+                symbol["location"] = location
+            else:
+                location = symbol["location"]
+                assert "range" in location
+                location["absolutePath"] = absolute_file_path
+                location["relativePath"] = relative_file_path
+                location["uri"] = f"file:/{absolute_file_path}"
+
+        # Allowed container kinds, currently only for Python
+        container_symbol_kinds = {
+            multilspy_types.SymbolKind.Method, 
+            multilspy_types.SymbolKind.Function, 
+            multilspy_types.SymbolKind.Class
+        }
+
+        def is_position_in_range(line: int, range_d: multilspy_types.Range) -> bool:
+            start = range_d["start"]
+            end = range_d["end"]
+
+            column_condition = True
+            if strict:
+                line_condition = end["line"] >= line > start["line"]
+                if column is not None:
+                    column_condition = column > start["character"]
+            else:
+                line_condition = end["line"] >= line >= start["line"]
+                if column is not None:
+                    column_condition = column >= start["character"]
+            return line_condition and column_condition
+
+        # Only consider containers that are not one-liners (otherwise we may get imports)
+        candidate_containers = [
+            s for s in symbols if s["kind"] in container_symbol_kinds and s["location"]["range"]["start"]["line"] != s["location"]["range"]["end"]["line"]
+        ]
+        var_containers = [
+            s for s in symbols if s["kind"] == multilspy_types.SymbolKind.Variable
+        ]
+        candidate_containers.extend(var_containers)
+        
+        if not candidate_containers:
+            return None
+
+        # From the candidates, find those whose range contains the given position.
+        containing_symbols = []
+        for symbol in candidate_containers:
+            s_range = symbol["location"]["range"]
+            if not is_position_in_range(line, s_range):
+                continue
+            containing_symbols.append(symbol)
+
+        if containing_symbols:
+            # Return the one with the greatest starting position (i.e. the innermost container).
+            return max(containing_symbols, key=lambda s: s["location"]["range"]["start"]["line"])
+        else:
+            return None
+    
+    async def request_container_of_symbol(self, symbol: multilspy_types.UnifiedSymbolInformation) -> multilspy_types.UnifiedSymbolInformation | None:
+        """
+        Finds the container of the given symbol if there is one.
+        """
+        assert "location" in symbol
+        return await self.request_containing_symbol(
+            symbol["location"]["relativePath"],
+            symbol["location"]["range"]["start"]["line"],
+            symbol["location"]["range"]["start"]["character"],
+            strict=True,
+        )
+    
+    async def request_defining_symbol(
+        self,
+        relative_file_path: str,
+        line: int,
+        column: int,
+    ) -> Optional[multilspy_types.UnifiedSymbolInformation]:
+        """
+        Finds the symbol that defines the symbol at the given location.
+        
+        This method first finds the definition of the symbol at the given position,
+        then retrieves the full symbol information for that definition.
+        
+        :param relative_file_path: The relative path to the file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column number.
+        :return: The symbol information for the definition, or None if not found.
+        """
+        if not self.server_started:
+            self.logger.log(
+                "request_defining_symbol called before Language Server started",
+                logging.ERROR,
+            )
+            raise MultilspyException("Language Server not started")
+            
+        # Get the definition location(s)
+        definitions = await self.request_definition(relative_file_path, line, column)
+        if not definitions:
+            return None
+        
+        # Use the first definition location
+        definition = definitions[0]
+        def_path = definition["relativePath"]
+        def_line = definition["range"]["start"]["line"]
+        def_col = definition["range"]["start"]["character"]
+        
+        # Find the symbol at or containing this location
+        defining_symbol = await self.request_containing_symbol(
+            def_path, def_line, def_col, strict=False
+        )
+        
+        return defining_symbol
+    
+    @property
+    def _cache_path(self) -> Path:
+        return Path(self.repository_root_path) / ".multilspy" / "cache" / "document_symbols_cache.pkl"
+    
+    def save_cache(self):
+        if self._cache_has_changed:
+            self.logger.log(f"Saving updated document symbols cache to {self._cache_path}", logging.INFO)
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._cache_path, "wb") as f:
+                pickle.dump(self._document_symbols_cache, f)
+            
+    def load_cache(self):
+        if not self._cache_path.exists():
+            return
+        self.logger.log(f"Loading document symbols cache from {self._cache_path}", logging.INFO)
+        with open(self._cache_path, "rb") as f:
+            self._document_symbols_cache = pickle.load(f)
+
 
 @ensure_all_methods_implemented(LanguageServer)
 class SyncLanguageServer:
@@ -660,6 +1026,8 @@ class SyncLanguageServer:
         self.language_server = language_server
         self.loop = None
         self.loop_thread = None
+        
+        self._server_context = None
 
     @classmethod
     def create(
@@ -818,3 +1186,157 @@ class SyncLanguageServer:
             self.language_server.request_hover(relative_file_path, line, column), self.loop
         ).result()
         return result
+    
+    # ----------------------------- FROM HERE ON MODIFICATIONS BY MISCHA --------------------
+    
+    def request_parsed_files(self) -> list[str]:
+        """This is slow, as it finds all files by finding all symbols. 
+        
+        This seems to be the only way, the LSP does not provide any endpoints for listing project files."""
+        assert self.loop
+        result = asyncio.run_coroutine_threadsafe(
+            self.language_server.request_parsed_files(), self.loop
+        ).result()
+        return result
+    
+    def request_referencing_symbols(
+        self, relative_file_path: str, line: int, column: int,
+        include_imports: bool = True, include_self: bool = False,
+    ) -> List[multilspy_types.UnifiedSymbolInformation]:
+        """
+        Finds all symbols that reference the symbol at the given location.
+        This is similar to request_references but filters to only include symbols
+        (functions, methods, classes, etc.) that reference the target symbol.
+
+        :param relative_file_path: The relative path to the file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column number.
+        :param include_imports: whether to also include imports as references.
+            Unfortunately, the LSP does not have an import type, so the references corresponding to imports
+            will not be easily distinguishable from definitions.
+        :param include_self: whether to include the references that is the "input symbol" itself. 
+            Only has an effect if the relative_file_path, line and column point to a symbol, for example a definition.
+        :return: List of symbols that reference the target symbol.
+        """
+        assert self.loop
+        result = asyncio.run_coroutine_threadsafe(
+            self.language_server.request_referencing_symbols(
+                relative_file_path, 
+                line, 
+                column, 
+                include_imports=include_imports, 
+                include_self=include_self
+            ), 
+            self.loop
+        ).result()
+        return result
+        
+    def request_containing_symbol(
+        self, relative_file_path: str, line: int, 
+        column: Optional[int] = None, strict: bool = False
+    ) -> multilspy_types.UnifiedSymbolInformation | None:
+        """
+        Finds the first symbol containing the position for the given file.
+        For Python, container symbols are considered to be those with kinds corresponding to
+        functions, methods, or classes (typically: Function (12), Method (6), Class (5)).
+        
+        The method operates as follows:
+          - Request the document symbols for the file.
+          - Filter symbols to those that start at or before the given line.
+          - From these, first look for symbols whose range contains the (line, column).
+          - If one or more symbols contain the position, return the one with the greatest starting position
+            (i.e. the innermost container).
+          - If none (strictly) contain the position, return the symbol with the greatest starting position 
+            among those above the given line.
+          - If no container candidates are found, return None.
+        
+        :param relative_file_path: The relative path to the Python file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column (also called character). If not passed, the lookup will be based
+            only on the line.
+        :param strict: If True, the position must be strictly within the range of the symbol.
+            Setting to true is useful for example for finding the parent of a symbol, as with strict=False,
+            and the line pointing to a symbol itself, the containing symbol will be the symbol itself 
+            (and not the parent).
+        :return: The container symbol (if found) or None.
+        """
+        assert self.loop
+        result = asyncio.run_coroutine_threadsafe(
+            self.language_server.request_containing_symbol(relative_file_path, line, column=column, strict=strict), self.loop
+        ).result()
+        return result
+    
+    def request_container_of_symbol(self, symbol: multilspy_types.UnifiedSymbolInformation) -> multilspy_types.UnifiedSymbolInformation | None:
+        """
+        Finds the container of the given symbol if there is one.
+        """
+        assert self.loop
+        result = asyncio.run_coroutine_threadsafe(
+            self.language_server.request_container_of_symbol(symbol), self.loop
+        ).result()
+        return result
+    
+    def request_defining_symbol(
+        self, relative_file_path: str, line: int, column: int
+    ) -> Optional[multilspy_types.UnifiedSymbolInformation]:
+        """
+        Finds the symbol that defines the symbol at the given location.
+        
+        This method first finds the definition of the symbol at the given position,
+        then retrieves the full symbol information for that definition.
+        
+        :param relative_file_path: The relative path to the file.
+        :param line: The 0-indexed line number.
+        :param column: The 0-indexed column number.
+        :return: The symbol information for the definition, or None if not found.
+        """
+        assert self.loop
+        result = asyncio.run_coroutine_threadsafe(
+            self.language_server.request_defining_symbol(relative_file_path, line, column), self.loop
+        ).result()
+        return result
+    
+    def start(self) -> "SyncLanguageServer":
+        """
+        Starts the language server process and connects to it. Call shutdown when ready.
+
+        :return: self for method chaining
+        """
+        self.loop = asyncio.new_event_loop()
+        self.loop_thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.loop_thread.start()
+        self._server_context = self.language_server.start_server()
+        asyncio.run_coroutine_threadsafe(self._server_context.__aenter__(), loop=self.loop).result()
+        return self
+
+    def stop(self) -> None:
+        """
+        Shuts down the language server process and cleans up resources.
+        Must be called after start().
+        """
+        if not self.loop or not self.loop_thread:
+            raise MultilspyException("Language Server not started")
+            
+        asyncio.run_coroutine_threadsafe(self._server_context.__aexit__(None, None, None), loop=self.loop).result()
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.loop_thread.join()
+        self.loop = None
+        self.loop_thread = None
+        self.save_cache()
+        
+    def save_cache(self):
+        """
+        Save the cache to a file.
+        """
+        self.language_server.save_cache()
+    
+    def load_cache(self):
+        """
+        Load the cache from a file.
+        """
+        self.language_server.load_cache()
+    
+        
+    def __del__(self):
+        if self.loop:
+            self.stop()

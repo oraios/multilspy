@@ -890,12 +890,8 @@
             }
         },
         "workspace": {
-            "symbol": {
-                "search": {
-                    "kind": "only_types",
-                    "limit": 128,
-                    "scope": "workspace"
-                }
+            "symbols": {
+                "maxSymbols": 0
             }
         }
     },
