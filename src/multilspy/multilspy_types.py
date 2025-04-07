@@ -211,8 +211,15 @@ class UnifiedSymbolInformation(TypedDict):
     selectionRange: NotRequired[Range]
     """ The range that should be selected and revealed when this symbol is being picked, e.g the name of a function.
     Must be contained by the `range`. """
-
-TreeRepr = Dict[int, List['TreeRepr']]
+    
+    body: NotRequired[str]
+    """ The body of the symbol. """
+    
+    children: List[UnifiedSymbolInformation]
+    """ The children of the symbol. 
+    Added to be compatible with `lsp_types.DocumentSymbol`, 
+    since it is sometimes useful to have the children of the symbol as a user-facing feature."""
+    
 
 class MarkupKind(Enum):
     """Describes the content type that a client supports in various

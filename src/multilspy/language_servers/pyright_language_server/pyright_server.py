@@ -7,7 +7,9 @@ import logging
 import os
 import pathlib
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Tuple
+
+from overrides import override
 
 from multilspy.multilspy_logger import MultilspyLogger
 from multilspy.language_server import LanguageServer
@@ -21,7 +23,6 @@ class PyrightServer(LanguageServer):
     Provides Python specific instantiation of the LanguageServer class using Pyright.
     Contains various configurations and settings specific to Python.
     """
-
     def __init__(self, config: MultilspyConfig, logger: MultilspyLogger, repository_root_path: str):
         """
         Creates a PyrightServer instance. This class is not meant to be instantiated directly.
@@ -31,51 +32,52 @@ class PyrightServer(LanguageServer):
             config,
             logger,
             repository_root_path,
-            # we can also use `pyright-langserver --stdio` but it requires pyright to be installed with npm
+            # Note 1: we can also use `pyright-langserver --stdio` but it requires pyright to be installed with npm
+            # Note 2: we can also use `bpyright-langserver --stdio` if we ever are unhappy with pyright
             ProcessLaunchInfo(cmd="python -m pyright.langserver --stdio", cwd=repository_root_path),
             "python",
         )
+        
+    @override
+    def should_always_ignore(self, dirname: str) -> bool:
+        return super().should_always_ignore(dirname) or dirname in ["venv", "__pycache__"]
 
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
         """
         Returns the initialize params for the Pyright Language Server.
         """
         # Create basic initialization parameters
-        initialize_params = {
+        initialize_params: InitializeParams = { # type: ignore
             "processId": os.getpid(),
             "rootPath": repository_absolute_path,
             "rootUri": pathlib.Path(repository_absolute_path).as_uri(),
+            "initializationOptions": {
+                "exclude": [
+                    "**/__pycache__",
+                    "**/.venv",
+                    "**/.env",
+                    "**/build",
+                    "**/dist",
+                    "**/.pixi",
+                ],
+                "reportMissingImports": "error",
+            },
             "capabilities": {
                 "workspace": {
                     "applyEdit": True,
-                    "workspaceEdit": {
-                        "documentChanges": True
-                    },
-                    "didChangeConfiguration": {
-                        "dynamicRegistration": True
-                    },
-                    "didChangeWatchedFiles": {
-                        "dynamicRegistration": True
-                    },
+                    "workspaceEdit": {"documentChanges": True},
+                    "didChangeConfiguration": {"dynamicRegistration": True},
+                    "didChangeWatchedFiles": {"dynamicRegistration": True},
                     "symbol": {
                         "dynamicRegistration": True,
                         "symbolKind": {
-                            "valueSet": [
-                                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26
-                            ]
-                        }
+                            "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+                        },
                     },
-                    "executeCommand": {
-                        "dynamicRegistration": True
-                    }
+                    "executeCommand": {"dynamicRegistration": True},
                 },
                 "textDocument": {
-                    "synchronization": {
-                        "dynamicRegistration": True,
-                        "willSave": True,
-                        "willSaveWaitUntil": True,
-                        "didSave": True
-                    },
+                    "synchronization": {"dynamicRegistration": True, "willSave": True, "willSaveWaitUntil": True, "didSave": True},
                     "completion": {
                         "dynamicRegistration": True,
                         "contextSupport": True,
@@ -84,84 +86,60 @@ class PyrightServer(LanguageServer):
                             "commitCharactersSupport": True,
                             "documentationFormat": ["markdown", "plaintext"],
                             "deprecatedSupport": True,
-                            "preselectSupport": True
+                            "preselectSupport": True,
                         },
                         "completionItemKind": {
-                            "valueSet": [
-                                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
-                            ]
-                        }
+                            "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+                        },
                     },
-                    "hover": {
-                        "dynamicRegistration": True,
-                        "contentFormat": ["markdown", "plaintext"]
-                    },
+                    "hover": {"dynamicRegistration": True, "contentFormat": ["markdown", "plaintext"]},
                     "signatureHelp": {
                         "dynamicRegistration": True,
                         "signatureInformation": {
                             "documentationFormat": ["markdown", "plaintext"],
-                            "parameterInformation": {
-                                "labelOffsetSupport": True
-                            }
-                        }
+                            "parameterInformation": {"labelOffsetSupport": True},
+                        },
                     },
-                    "definition": {
-                        "dynamicRegistration": True
-                    },
-                    "references": {
-                        "dynamicRegistration": True
-                    },
-                    "documentHighlight": {
-                        "dynamicRegistration": True
-                    },
+                    "definition": {"dynamicRegistration": True},
+                    "references": {"dynamicRegistration": True},
+                    "documentHighlight": {"dynamicRegistration": True},
                     "documentSymbol": {
                         "dynamicRegistration": True,
                         "symbolKind": {
-                            "valueSet": [
-                                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26
-                            ]
+                            "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
                         },
-                        "hierarchicalDocumentSymbolSupport": True
+                        "hierarchicalDocumentSymbolSupport": True,
                     },
                     "codeAction": {
                         "dynamicRegistration": True,
                         "codeActionLiteralSupport": {
                             "codeActionKind": {
                                 "valueSet": [
-                                    "", "quickfix", "refactor", "refactor.extract", "refactor.inline", 
-                                    "refactor.rewrite", "source", "source.organizeImports"
+                                    "",
+                                    "quickfix",
+                                    "refactor",
+                                    "refactor.extract",
+                                    "refactor.inline",
+                                    "refactor.rewrite",
+                                    "source",
+                                    "source.organizeImports",
                                 ]
                             }
-                        }
+                        },
                     },
-                    "codeLens": {
-                        "dynamicRegistration": True
-                    },
-                    "formatting": {
-                        "dynamicRegistration": True
-                    },
-                    "rangeFormatting": {
-                        "dynamicRegistration": True
-                    },
-                    "onTypeFormatting": {
-                        "dynamicRegistration": True
-                    },
-                    "rename": {
-                        "dynamicRegistration": True
-                    },
-                    "publishDiagnostics": {
-                        "relatedInformation": True
-                    }
-                }
+                    "codeLens": {"dynamicRegistration": True},
+                    "formatting": {"dynamicRegistration": True},
+                    "rangeFormatting": {"dynamicRegistration": True},
+                    "onTypeFormatting": {"dynamicRegistration": True},
+                    "rename": {"dynamicRegistration": True},
+                    "publishDiagnostics": {"relatedInformation": True},
+                },
             },
             "workspaceFolders": [
-                {
-                    "uri": pathlib.Path(repository_absolute_path).as_uri(),
-                    "name": os.path.basename(repository_absolute_path)
-                }
-            ]
+                {"uri": pathlib.Path(repository_absolute_path).as_uri(), "name": os.path.basename(repository_absolute_path)}
+            ],
         }
-        
+
         return initialize_params
 
     @asynccontextmanager
@@ -205,16 +183,17 @@ class PyrightServer(LanguageServer):
         async with super().start_server():
             self.logger.log("Starting pyright-langserver server process", logging.INFO)
             await self.server.start()
-            
+
             # Send proper initialization parameters
             initialize_params = self._get_initialize_params(self.repository_root_path)
-            
+
             self.logger.log(
-                "Sending initialize request from LSP client to LSP server and awaiting response",
+                "Sending initialize request from LSP client to pyright server and awaiting response",
                 logging.INFO,
             )
             init_response = await self.server.send.initialize(initialize_params)
-            
+            self.logger.log(f"Received initialize response from pyright server: {init_response}", logging.INFO)
+
             # Verify that the server supports our required features
             self.server.notify.initialized({})
 

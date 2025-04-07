@@ -88,6 +88,11 @@ class PathUtils:
         parsed = urlparse(uri)
         host = "{0}{0}{mnt}{0}".format(os.path.sep, mnt=parsed.netloc)
         return os.path.normpath(os.path.join(host, url2pathname(unquote(parsed.path))))
+    
+    @staticmethod
+    def is_glob_pattern(pattern: str) -> bool:
+        """Check if a pattern contains glob-specific characters."""
+        return any(c in pattern for c in '*?[]!')
 
 class FileUtils:
     """
@@ -213,7 +218,7 @@ class PlatformUtils:
                     platform_id += "-" + libc
             return PlatformId(platform_id)
         else:
-            raise MultilspyException("Unknown platform: " + system + " " + machine + " " + bitness)
+            raise MultilspyException(f"Unknown platform: {system=}, {machine=}, {bitness=}")
 
     @staticmethod
     def get_dotnet_version() -> DotnetVersion:

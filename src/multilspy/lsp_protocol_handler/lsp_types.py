@@ -166,6 +166,9 @@ class SymbolKind(IntEnum):
     Module = 2
     Namespace = 3
     Package = 4
+    """
+    Represents a package or simply a directory in the filesystem
+    """
     Class = 5
     Method = 6
     Property = 7
@@ -188,6 +191,13 @@ class SymbolKind(IntEnum):
     Event = 24
     Operator = 25
     TypeParameter = 26
+    
+    @classmethod    
+    def from_int(cls, value: int) -> "SymbolKind":
+        for symbol_kind in cls:
+            if symbol_kind.value == value:
+                return symbol_kind
+        raise ValueError(f"Invalid symbol kind: {value}")
 
 
 class SymbolTag(IntEnum):
@@ -2416,8 +2426,6 @@ class DocumentSymbol(TypedDict):
     selectionRange: "Range"
     """ The range that should be selected and revealed when this symbol is being picked, e.g the name of a function.
     Must be contained by the `range`. """
-    children: NotRequired[List["DocumentSymbol"]]
-    """ Children of this symbol, e.g. properties of a class. """
 
 
 class DocumentSymbolRegistrationOptions(TypedDict):

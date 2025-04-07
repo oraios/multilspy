@@ -7,11 +7,12 @@ import json
 import shutil
 import logging
 import os
-import pwd
 import subprocess
 import pathlib
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Tuple
+
+from overrides import override
 
 from multilspy.multilspy_logger import MultilspyLogger
 from multilspy.language_server import LanguageServer
@@ -19,6 +20,16 @@ from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo
 from multilspy.lsp_protocol_handler.lsp_types import InitializeParams
 from multilspy.multilspy_config import MultilspyConfig
 from multilspy.multilspy_utils import PlatformUtils, PlatformId
+
+# Platform-specific imports
+if os.name != 'nt':  # Unix-like systems
+    import pwd
+else:
+    # Dummy pwd module for Windows
+    class pwd:
+        @staticmethod
+        def getpwuid(uid):
+            return type('obj', (), {'pw_name': os.environ.get('USERNAME', 'unknown')})()
 
 
 class TypeScriptLanguageServer(LanguageServer):
@@ -39,6 +50,15 @@ class TypeScriptLanguageServer(LanguageServer):
             "typescript",
         )
         self.server_ready = asyncio.Event()
+        
+    @override
+    def should_always_ignore(self, dirname: str) -> bool:
+        return super().should_always_ignore(dirname) or dirname in [
+            "node_modules",
+            "dist",
+            "build",
+            "coverage",
+        ]
 
     def setup_runtime_dependencies(self, logger: MultilspyLogger, config: MultilspyConfig) -> str:
         """
@@ -47,14 +67,14 @@ class TypeScriptLanguageServer(LanguageServer):
         platform_id = PlatformUtils.get_platform_id()
 
         valid_platforms = [
-            PlatformId.LINUX_x64, 
+            PlatformId.LINUX_x64,
             PlatformId.LINUX_arm64,
-            PlatformId.OSX, 
+            PlatformId.OSX,
             PlatformId.OSX_x64,
             PlatformId.OSX_arm64,
-            PlatformId.WIN_x64, 
-            PlatformId.WIN_arm64, 
-        ] 
+            PlatformId.WIN_x64,
+            PlatformId.WIN_arm64,
+        ]
         assert platform_id in valid_platforms, f"Platform {platform_id} is not supported for multilspy javascript/typescript at the moment"
 
         with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r") as f:
@@ -71,22 +91,28 @@ class TypeScriptLanguageServer(LanguageServer):
         is_npm_installed = shutil.which('npm') is not None
         assert is_npm_installed, "npm is not installed or isn't in PATH. Please install npm and try again."
 
-        # Install typescript and typescript-language-server if not already installed, as a non-root user
+        # Install typescript and typescript-language-server if not already installed
         if not os.path.exists(tsserver_ls_dir):
             os.makedirs(tsserver_ls_dir, exist_ok=True)
             for dependency in runtime_dependencies:
-                user = pwd.getpwuid(os.getuid()).pw_name
-                subprocess.run(
-                    dependency["command"], 
-                    shell=True, 
-                    check=True, 
-                    user=user, 
-                    cwd=tsserver_ls_dir,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-        
+                # Handle platform-specific user settings
+                subprocess_kwargs = {
+                    'shell': True,
+                    'check': True,
+                    'cwd': tsserver_ls_dir,
+                    'stdout': subprocess.DEVNULL,
+                    'stderr': subprocess.DEVNULL
+                }
+
+                # Only add user parameter on Unix-like systems
+                if os.name != 'nt':  # Not Windows
+                    user = pwd.getpwuid(os.getuid()).pw_name
+                    subprocess_kwargs['user'] = user
+
+                subprocess.run(dependency["command"], **subprocess_kwargs)
+
         tsserver_executable_path = os.path.join(tsserver_ls_dir, "node_modules", ".bin", "typescript-language-server")
+
         assert os.path.exists(tsserver_executable_path), "typescript-language-server executable not found. Please install typescript-language-server and try again."
         return f"{tsserver_executable_path} --stdio"
 
@@ -113,7 +139,7 @@ class TypeScriptLanguageServer(LanguageServer):
         d["workspaceFolders"][0]["name"] = os.path.basename(repository_absolute_path)
 
         return d
-    
+
     @asynccontextmanager
     async def start_server(self) -> AsyncIterator["TypeScriptLanguageServer"]:
         """
@@ -164,7 +190,7 @@ class TypeScriptLanguageServer(LanguageServer):
                 logging.INFO,
             )
             init_response = await self.server.send.initialize(initialize_params)
-            
+
             # TypeScript-specific capability checks
             assert init_response["capabilities"]["textDocumentSync"] == 2
             assert "completionProvider" in init_response["capabilities"]
@@ -172,7 +198,7 @@ class TypeScriptLanguageServer(LanguageServer):
                 "triggerCharacters": ['.', '"', "'", '/', '@', '<'],
                 "resolveProvider": True
             }
-            
+
             self.server.notify.initialized({})
             self.completions_available.set()
 

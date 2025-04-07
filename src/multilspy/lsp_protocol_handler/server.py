@@ -31,6 +31,7 @@ SOFTWARE.
 import asyncio
 import dataclasses
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional, Union
 
@@ -41,6 +42,7 @@ StringDict = Dict[str, Any]
 PayloadLike = Union[List[StringDict], StringDict, None]
 CONTENT_LENGTH = "Content-Length: "
 ENCODING = "utf-8"
+log = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -203,6 +205,8 @@ class LanguageServerHandler:
         """
         child_proc_env = os.environ.copy()
         child_proc_env.update(self.process_launch_info.env)
+
+        log.info("Starting language server process via command: %s", self.process_launch_info.cmd)
         self.process = await asyncio.create_subprocess_shell(
             self.process_launch_info.cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -211,6 +215,14 @@ class LanguageServerHandler:
             env=child_proc_env,
             cwd=self.process_launch_info.cwd,
         )
+
+        # Check if process terminated immediately
+        if self.process.returncode is not None:
+            log.error("Language server has already terminated/could not be started")
+            # Process has already terminated
+            stderr_data = await self.process.stderr.read()
+            error_message = stderr_data.decode('utf-8', errors='replace')
+            raise RuntimeError(f"Process terminated immediately with code {self.process.returncode}. Error: {error_message}")
 
         self.loop = asyncio.get_event_loop()
         self.tasks[self.task_counter] = self.loop.create_task(self.run_forever())
