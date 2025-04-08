@@ -30,10 +30,13 @@ class Language(str, Enum):
     PYTHON = "python"
     RUST = "rust"
     JAVA = "java"
+    KOTLIN = "kotlin"
     TYPESCRIPT = "typescript"
     JAVASCRIPT = "javascript"
     GO = "go"
     RUBY = "ruby"
+    DART = "dart"
+    CPP = "cpp"
 
     def __str__(self) -> str:
         return self.value
@@ -67,6 +70,7 @@ class MultilspyConfig:
     """
     code_language: Language
     trace_lsp_communication: bool = False
+    start_independent_lsp_process: bool = True
     ignored_paths: list[str] = field(default_factory=list)
     """Paths, dirs or glob-like patterns. The matching will follow the same logic as for .gitignore entries"""
     gitignore_file_content: str | None = None
