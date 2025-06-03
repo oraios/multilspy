@@ -64,13 +64,19 @@ class ClangdLanguageServer(LanguageServer):
 
         clangd_ls_dir = os.path.join(os.path.dirname(__file__), "static/clangd")
         clangd_executable_path = os.path.join(clangd_ls_dir, "clangd_19.1.2", "bin", dependency["binaryName"])
-        if not os.path.exists(clangd_ls_dir):
-            os.makedirs(clangd_ls_dir)
+        if not os.path.exists(clangd_executable_path):
+            clangd_url = dependency["url"]
+            logger.log(f"Clangd executable not found at {clangd_executable_path}. Downloading from {clangd_url}", logging.INFO)
+            os.makedirs(clangd_ls_dir, exist_ok=True)
             if dependency["archiveType"] == "zip":
                 FileUtils.download_and_extract_archive(
-                    logger, dependency["url"], clangd_ls_dir, dependency["archiveType"]
+                    logger, clangd_url, clangd_ls_dir, dependency["archiveType"]
                 )
-        assert os.path.exists(clangd_executable_path)
+        if not os.path.exists(clangd_executable_path):
+            raise FileNotFoundError(
+                f"Clangd executable not found at {clangd_executable_path}.\n"
+                "Make sure you have installed clangd. See https://clangd.llvm.org/installation"
+            )
         os.chmod(clangd_executable_path, stat.S_IEXEC)
 
         return clangd_executable_path

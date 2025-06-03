@@ -36,14 +36,14 @@ class JediServer(LanguageServer):
         )
         
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
-        return super().should_always_ignore(dirname) or dirname in ["venv", "__pycache__"]
+    def is_ignored_dirname(self, dirname: str) -> bool:
+        return super().is_ignored_dirname(dirname) or dirname in ["venv", "__pycache__"]
 
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
         """
         Returns the initialize params for the Jedi Language Server.
         """
-        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
 
         del d["_description"]

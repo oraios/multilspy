@@ -5,13 +5,16 @@ import os
 import pathlib
 import subprocess
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, List
 
 from overrides import override
 
+from multilspy import multilspy_types
+from multilspy.lsp_protocol_handler import lsp_types
+from multilspy.multilspy_exceptions import MultilspyException
 from multilspy.multilspy_logger import MultilspyLogger
 from multilspy.language_server import LanguageServer
-from multilspy.lsp_protocol_handler.server import ProcessLaunchInfo
+from multilspy.lsp_protocol_handler.server import Error, ProcessLaunchInfo
 from multilspy.lsp_protocol_handler.lsp_types import InitializeParams
 from multilspy.multilspy_config import MultilspyConfig
 
@@ -22,12 +25,12 @@ class Gopls(LanguageServer):
     """
     
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
+    def is_ignored_dirname(self, dirname: str) -> bool:
         # For Go projects, we should ignore:
         # - vendor: third-party dependencies vendored into the project
         # - node_modules: if the project has JavaScript components
         # - dist/build: common output directories
-        return super().should_always_ignore(dirname) or dirname in ["vendor", "node_modules", "dist", "build"]
+        return super().is_ignored_dirname(dirname) or dirname in ["vendor", "node_modules", "dist", "build"]
 
     @staticmethod
     def _get_go_version():
@@ -57,28 +60,21 @@ class Gopls(LanguageServer):
         Check if required Go runtime dependencies are available.
         Raises RuntimeError with helpful message if dependencies are missing.
         """
-        missing_deps = []
-        
-        # Check for Go installation
         go_version = cls._get_go_version()
         if not go_version:
-            missing_deps.append(("Go", "https://golang.org/doc/install"))
+            raise RuntimeError("Go is not installed. Please install Go from https://golang.org/doc/install and make sure it is added to your PATH.")
         
-        # Check for gopls
         gopls_version = cls._get_gopls_version()
         if not gopls_version:
-            missing_deps.append(("gopls", "https://pkg.go.dev/golang.org/x/tools/gopls#section-readme"))
-        
-        if missing_deps:
-            error_msg = "Missing required dependencies:\n"
-            for dep, install_url in missing_deps:
-                error_msg += f"- {dep}: Please install from {install_url}\n"
-            raise RuntimeError(error_msg)
+            raise RuntimeError(
+                "Found a Go version but gopls is not installed.\n"
+                "Please install gopls as described in https://pkg.go.dev/golang.org/x/tools/gopls#section-readme\n\n"
+                "After installation, make sure it is added to your PATH (it might be installed in a different location than Go)."
+            )
         
         return True
 
     def __init__(self, config: MultilspyConfig, logger: MultilspyLogger, repository_root_path: str):
-        # Check runtime dependencies before initializing
         self.setup_runtime_dependency()
         
         super().__init__(
@@ -95,7 +91,7 @@ class Gopls(LanguageServer):
         """
         Returns the initialize params for the TypeScript Language Server.
         """
-        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
 
         del d["_description"]

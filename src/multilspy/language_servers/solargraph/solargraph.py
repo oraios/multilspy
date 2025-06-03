@@ -44,8 +44,8 @@ class Solargraph(LanguageServer):
         self.server_ready = asyncio.Event()
         
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
-        return super().should_always_ignore(dirname) or dirname in ["vendor"]
+    def is_ignored_dirname(self, dirname: str) -> bool:
+        return super().is_ignored_dirname(dirname) or dirname in ["vendor"]
 
     def setup_runtime_dependencies(self, logger: MultilspyLogger, config: MultilspyConfig, repository_root_path: str) -> str:
         """
@@ -56,7 +56,7 @@ class Solargraph(LanguageServer):
         if platform_id in [PlatformId.WIN_x64, PlatformId.WIN_arm64, PlatformId.WIN_x86]:
             which_cmd = "where"
 
-        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
             del d["_description"]
 
@@ -100,7 +100,7 @@ class Solargraph(LanguageServer):
         """
         Returns the initialize params for the Solargraph Language Server.
         """
-        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
 
         del d["_description"]

@@ -142,14 +142,14 @@ class EclipseJDTLS(LanguageServer):
         super().__init__(config, logger, repository_root_path, ProcessLaunchInfo(cmd, proc_env, proc_cwd), "java")
     
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
+    def is_ignored_dirname(self, dirname: str) -> bool:
         # Ignore common Java build directories from different build tools:
         # - Maven: target
         # - Gradle: build, .gradle
         # - Eclipse: bin, .settings
         # - IntelliJ IDEA: out, .idea
         # - General: classes, dist, lib
-        return super().should_always_ignore(dirname) or dirname in [
+        return super().is_ignored_dirname(dirname) or dirname in [
             "target",      # Maven
             "build",       # Gradle
             "bin",         # Eclipse
@@ -165,7 +165,7 @@ class EclipseJDTLS(LanguageServer):
         """
         platformId = PlatformUtils.get_platform_id()
 
-        with open(str(PurePath(os.path.dirname(__file__), "runtime_dependencies.json")), "r") as f:
+        with open(str(PurePath(os.path.dirname(__file__), "runtime_dependencies.json")), "r", encoding="utf-8") as f:
             runtimeDependencies = json.load(f)
             del runtimeDependencies["_description"]
 
@@ -264,7 +264,7 @@ class EclipseJDTLS(LanguageServer):
         Returns the initialize parameters for the EclipseJDTLS server.
         """
         # Look into https://github.com/eclipse/eclipse.jdt.ls/blob/master/org.eclipse.jdt.ls.core/src/org/eclipse/jdt/ls/core/internal/preferences/Preferences.java to understand all the options available
-        with open(str(PurePath(os.path.dirname(__file__), "initialize_params.json")), "r") as f:
+        with open(str(PurePath(os.path.dirname(__file__), "initialize_params.json")), "r", encoding="utf-8") as f:
             d: InitializeParams = json.load(f)
 
         del d["_description"]

@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from .lsp_requests import LspNotification, LspRequest
 from .lsp_types import ErrorCodes
+from ..multilspy_exceptions import MultilspyException
 
 StringDict = Dict[str, Any]
 PayloadLike = Union[List[StringDict], StringDict, None]
@@ -481,7 +482,7 @@ class LanguageServerHandler:
             await self._send_payload(make_request(method, request_id, params))
             await request.cv.wait()
         if isinstance(request.error, Error):
-            raise request.error
+            raise MultilspyException(f"Could not process request {method} with params:\n{params}.\n  Language server error: {request.error}") from request.error
         return request.result
 
     def _send_payload_sync(self, payload: StringDict) -> None:

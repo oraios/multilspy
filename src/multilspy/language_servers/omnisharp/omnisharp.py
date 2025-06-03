@@ -111,14 +111,14 @@ class OmniSharp(LanguageServer):
         self.references_available = asyncio.Event()
         
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
-        return super().should_always_ignore(dirname) or dirname in ["bin", "obj"]
+    def is_ignored_dirname(self, dirname: str) -> bool:
+        return super().is_ignored_dirname(dirname) or dirname in ["bin", "obj"]
 
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
         """
         Returns the initialize params for the Omnisharp Language Server.
         """
-        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
 
         del d["_description"]
@@ -145,7 +145,7 @@ class OmniSharp(LanguageServer):
         platform_id = PlatformUtils.get_platform_id()
         dotnet_version = PlatformUtils.get_dotnet_version()
 
-        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
             del d["_description"]
 
@@ -384,7 +384,7 @@ class OmniSharp(LanguageServer):
             )
             init_response = await self.server.send.initialize(initialize_params)
             self.server.notify.initialized({})
-            with open(os.path.join(os.path.dirname(__file__), "workspace_did_change_configuration.json"), "r") as f:
+            with open(os.path.join(os.path.dirname(__file__), "workspace_did_change_configuration.json"), "r", encoding="utf-8") as f:
                 self.server.notify.workspace_did_change_configuration({
                     "settings": json.load(f)
                 })

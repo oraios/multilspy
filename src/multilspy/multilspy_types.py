@@ -199,7 +199,11 @@ class UnifiedSymbolInformation(TypedDict):
     """ The name of the symbol containing this symbol. This information is for
     user interface purposes (e.g. to render a qualifier in the user interface
     if necessary). It can't be used to re-infer a hierarchy for the document
-    symbols. """
+    symbols. 
+    
+    Note: within Serena, the parent attribute was added and should be used instead. 
+    Most LS don't provide containerName.
+    """
 
     detail: NotRequired[str]
     """ More detail for this symbol, e.g the signature of a function. """
@@ -219,6 +223,11 @@ class UnifiedSymbolInformation(TypedDict):
     """ The children of the symbol. 
     Added to be compatible with `lsp_types.DocumentSymbol`, 
     since it is sometimes useful to have the children of the symbol as a user-facing feature."""
+    
+    parent: NotRequired[UnifiedSymbolInformation | None]
+    """The parent of the symbol, if there is any. Added with Serena, not part of the LSP.
+    All symbols except the root packages will have a parent.
+    """
     
 
 class MarkupKind(Enum):

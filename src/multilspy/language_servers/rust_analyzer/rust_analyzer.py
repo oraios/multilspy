@@ -42,8 +42,8 @@ class RustAnalyzer(LanguageServer):
         self.server_ready = asyncio.Event()
     
     @override
-    def should_always_ignore(self, dirname: str) -> bool:
-        return super().should_always_ignore(dirname) or dirname in ["target"]
+    def is_ignored_dirname(self, dirname: str) -> bool:
+        return super().is_ignored_dirname(dirname) or dirname in ["target"]
 
     def setup_runtime_dependencies(self, logger: MultilspyLogger, config: MultilspyConfig) -> str:
         """
@@ -51,7 +51,7 @@ class RustAnalyzer(LanguageServer):
         """
         platform_id = PlatformUtils.get_platform_id()
 
-        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "runtime_dependencies.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
             del d["_description"]
 
@@ -88,7 +88,7 @@ class RustAnalyzer(LanguageServer):
         """
         Returns the initialize params for the Rust Analyzer Language Server.
         """
-        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r") as f:
+        with open(os.path.join(os.path.dirname(__file__), "initialize_params.json"), "r", encoding="utf-8") as f:
             d = json.load(f)
 
         del d["_description"]
